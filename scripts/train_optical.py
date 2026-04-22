@@ -1,170 +1,201 @@
-import numpy as np
 import os
-import matplotlib.pyplot as plt
+import argparse
+
+import yaml
+import numpy as np
 import torch
-import random
-from torch.utils.data import DataLoader, random_split
 import torch.optim as optim
-from lumos.model import PD2Latent, PCAutoencoder, ShapeNet
+from torch.utils.data import DataLoader, random_split
+
+from lumos.model import PCAutoencoder, PD2Latent, ShapeNet
 from lumos.data import WaveguideDataset
 
-torch.backends.cudnn.benchmark = True
-random.seed(56)
-np.random.seed(56)
-torch.manual_seed(56)
 
-DATA_PATH = "Data/Combined_Data"
-BEST_AE_EP = 9
-OPTICAL_DIM = 30  # Dimensionality of optical property vector
-LATENT_DIM = 512
-NUM_POINTS = 4096
-BEST_AE_PATH = "checkpoints/model_ep15.pth"
-TNET1 = False  # Whether to use input transform net
-TNET2 = False  # Whether to use feature transform net
-STRIDE = 3
-BATCH_SIZE = 64
-EPOCHS = 500
-LR = 0.001
+def precompute_latents(ae, dataset, batch_size: int, device):
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    optical_signals = []
+    latent_vectors = []
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(loader):
+            batch_points, batch_optical, _ = batch
+            batch_points = batch_points.to(device).float()
+            z = ae.encoder(batch_points)
+            latent_vectors.append(z.cpu())
+            optical_signals.append(batch_optical)
+            if (batch_idx + 1) % 200 == 0:
+                print(f"Precomputing latents: {batch_idx + 1}/{len(loader)} batches")
+    return torch.cat(latent_vectors, dim=0), torch.cat(optical_signals, dim=0)
 
-dataset = WaveguideDataset(DATA_PATH, stride=STRIDE)
-sample_point, sample_optical, _ = dataset[0]
-print(f"Sample point cloud shape: {sample_point.shape}")
-print(f"Sample optical signal shape: {sample_optical.shape}")
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-ae = PCAutoencoder(latent_dim=LATENT_DIM, num_points=NUM_POINTS, tnet1=TNET1, tnet2=TNET2).to(device)
-model = PD2Latent(in_features=OPTICAL_DIM, out_features=LATENT_DIM).to(device)
-optimizer = optim.SGD(model.parameters(), lr=LR, momentum=0.9)
-sched = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
-
-best_ae = torch.load(BEST_AE_PATH, map_location=device)
-ae.load_state_dict(best_ae['model_state_dict'])
-ae.eval()
-print(f"Autoencoder loaded from {BEST_AE_PATH}")
-
-# Precompute latent vectors for all point clouds
-print("Precomputing latent vectors for all point clouds...")
-latent_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)  ### iterate full dataset
-optical_signals = []
-latent_vectors = []
-with torch.no_grad():
-    for batch_idx, batch in enumerate(latent_loader):
-        batch_points, batch_optical, _ = batch
-        batch_points = batch_points.to(device).float()  # (B, N, 3)
-        #print(batch_points.shape)
-        z = ae.encoder(batch_points)  # (B, LATENT_DIM)
-
-        latent_vectors.append(z.cpu())
-        optical_signals.append(batch_optical)
-
-        if (batch_idx + 1) % 200 == 0:
-            print(f"Processed {batch_idx + 1} / {len(latent_loader)} batches")
-
-latent_vectors = torch.cat(latent_vectors, dim=0)   # (N, LATENT_DIM)
-optical_filtered = torch.cat(optical_signals, dim=0)  # (N, optical_dim)
-
-print(f"Precomputed latent vectors shape: {latent_vectors.shape}")
-
-# Prepare dataset and dataloaders
-X = torch.tensor(optical_filtered, dtype=torch.float32)  # (N, 150)
-Z = torch.tensor(latent_vectors, dtype=torch.float32)  # (N, LATENT_DIM)
-dataset = torch.utils.data.TensorDataset(X, Z)
-train_size = int(0.8 * len(dataset))
-val_size = int(0.1 * len(dataset))
-test_size = len(dataset) - train_size - val_size
-
-train_dataset, val_dataset, test_dataset = random_split(
-    dataset, [train_size, val_size, test_size],
-    generator=torch.Generator().manual_seed(56)
-)
-
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-def train_epoch():
+def train_epoch(model, loader, optimizer, device):
     model.train()
     loss_sum = 0.0
-
-    for batch_x, batch_z in train_loader:
+    for batch_x, batch_z in loader:
         batch_x, batch_z = batch_x.to(device), batch_z.to(device)
         optimizer.zero_grad()
         pred_z = model(batch_x)
         loss = torch.mean((pred_z - batch_z) ** 2)
-        #print("Batch Loss:", loss.item())
         loss.backward()
         optimizer.step()
         loss_sum += loss.item() * batch_x.size(0)
+    return loss_sum / max(1, len(loader))
 
-    return loss_sum / max(1, len(train_loader))
 
 @torch.no_grad()
-def evaluate_epoch():
+def evaluate_epoch(model, loader, device):
     model.eval()
     loss_sum = 0.0
-    for batch_x, batch_z in val_loader:
+    for batch_x, batch_z in loader:
         batch_x, batch_z = batch_x.to(device), batch_z.to(device)
         pred_z = model(batch_x)
         loss = torch.mean((pred_z - batch_z) ** 2)
-        #print("Val Batch Loss:", loss.item())
         loss_sum += loss.item() * batch_x.size(0)
-    return loss_sum / max(1, len(val_loader))
+    return loss_sum / max(1, len(loader))
 
-def train(patience=20):
-    os.makedirs("checkpoints/optical_checkpoints", exist_ok=True)
-    best_val = float('inf')
+
+def train(model, train_loader, val_loader, optimizer, sched, cfg: dict, device, ckpt_dir: str):
+    tr = cfg["train_optical"]
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    best_val = float("inf")
     best_path = None
     epochs_without_improve = 0
 
-    for epoch in range(EPOCHS):
-        train_loss = train_epoch()
-        val_loss = evaluate_epoch()
-        sched.step(val_loss)
+    for epoch in range(tr["epochs"]):
+        train_loss = train_epoch(model, train_loader, optimizer, device)
+        val_loss = evaluate_epoch(model, val_loader, device)
+        sched.step()
 
-        print(f"Epoch {epoch+1}/{EPOCHS}, Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
+        print(f"Epoch {epoch + 1}/{tr['epochs']}, Train: {train_loss:.6f}, Val: {val_loss:.6f}")
 
-        ep_path = os.path.join(f"checkpoints/optical_checkpoints", f"model_ep{epoch+1}.pth")
         if val_loss < best_val:
             best_val = val_loss
             epochs_without_improve = 0
-            best_path = ep_path
+            best_path = os.path.join(ckpt_dir, f"model_ep{epoch + 1}.pth")
             torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss
+                "epoch": epoch + 1,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_loss": val_loss,
             }, best_path)
         else:
             epochs_without_improve += 1
-        
-        if epochs_without_improve >= patience:
+
+        if epochs_without_improve >= tr["early_stop_patience"]:
             print(f"Early stopping at epoch {epoch + 1}.")
             break
 
     return best_val, best_path
 
-print("Starting training...")
-best_val, best_path = train(patience=20)
-print(f"Best model saved at {best_path} with Val Loss: {best_val:.6f}")
 
-# Save the combined model
-combined_model = ShapeNet(pd_in_features=optical_filtered.shape[1], latent_dim=LATENT_DIM, num_points=NUM_POINTS, tnet1=TNET1, tnet2=TNET2)
-pd2latent_checkpoint = torch.load(best_path, map_location=device)
-combined_model.pd2latent.load_state_dict(pd2latent_checkpoint['model_state_dict'])
-combined_model.decoder.load_state_dict(ae.decoder.state_dict())
+def main(cfg: dict):
+    data_cfg = cfg["data"]
+    model_cfg = cfg["model"]
+    tr = cfg["train_optical"]
+    out_cfg = cfg["output"]
 
-os.makedirs(f"checkpoints", exist_ok=True)
-combined_path = os.path.join(f"checkpoints", "best_combined_500.pth")
+    # Output always goes into the current run directory
+    run_dir = os.path.join(out_cfg["base_dir"], out_cfg["run_name"])
+    ckpt_dir = os.path.join(run_dir, "optical_checkpoints")
+    combined_path = os.path.join(run_dir, "best_combined.pth")
 
-torch.save({
-    "epoch": pd2latent_checkpoint.get("epoch", None),
-    "val_loss": best_val,
-    "pd_dim": optical_filtered.shape[1],
-    "latent_dim": LATENT_DIM,
-    "num_points": NUM_POINTS,
-    "tnet1": TNET1,
-    "tnet2": TNET2,
-    "pd2latent_state_dict": combined_model.pd2latent.state_dict(),
-    "decoder_state_dict": combined_model.decoder.state_dict(),
-}, combined_path)
+    # AE checkpoint: use ae_run_name override if set, otherwise same run
+    ae_run = tr.get("ae_run_name") or out_cfg["run_name"]
+    ae_run_dir = os.path.join(out_cfg["base_dir"], ae_run)
+    ae_ckpt_path = os.path.join(ae_run_dir, "checkpoints", "best_model.pth")
 
-print(f"Combined model saved to {combined_path}")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    dataset = WaveguideDataset(data_cfg["path"], stride=data_cfg["stride"])
+    sample_point, sample_optical, _ = dataset[0]
+    print(f"Sample point cloud shape: {sample_point.shape}")
+    print(f"Sample optical signal shape: {sample_optical.shape}")
+
+    ae = PCAutoencoder(
+        latent_dim=model_cfg["latent_dim"],
+        num_points=model_cfg["num_points"],
+        tnet1=model_cfg["tnet1"],
+        tnet2=model_cfg["tnet2"],
+    ).to(device)
+    best_ae = torch.load(ae_ckpt_path, map_location=device)
+    ae.load_state_dict(best_ae["model_state_dict"])
+    ae.eval()
+    print(f"Autoencoder loaded from {ae_ckpt_path}")
+
+    print("Precomputing latent vectors...")
+    latent_vectors, optical_signals = precompute_latents(ae, dataset, tr["batch_size"], device)
+    print(f"Latent vectors shape: {latent_vectors.shape}")
+
+    X = optical_signals.float()
+    Z = latent_vectors.float()
+    tensor_dataset = torch.utils.data.TensorDataset(X, Z)
+
+    train_size = int(data_cfg["train_split"] * len(tensor_dataset))
+    val_size = int(data_cfg["val_split"] * len(tensor_dataset))
+    test_size = len(tensor_dataset) - train_size - val_size
+    train_dataset, val_dataset, _ = random_split(
+        tensor_dataset, [train_size, val_size, test_size],
+        generator=torch.Generator().manual_seed(cfg["seed"])
+    )
+
+    train_loader = DataLoader(train_dataset, batch_size=tr["batch_size"], shuffle=True,
+                              num_workers=tr["num_workers"])
+    val_loader = DataLoader(val_dataset, batch_size=tr["batch_size"], shuffle=False,
+                            num_workers=tr["num_workers"])
+
+    model = PD2Latent(in_features=model_cfg["optical_dim"], out_features=model_cfg["latent_dim"]).to(device)
+    optimizer = optim.SGD(model.parameters(), lr=tr["lr"], momentum=0.9)
+    sched = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=tr["epochs"])
+
+
+    print("Starting training...")
+    best_val, best_path = train(model, train_loader, val_loader, optimizer, sched, cfg, device, ckpt_dir)
+    print(f"Best model saved at {best_path} with Val Loss: {best_val:.6f}")
+
+    combined_model = ShapeNet(
+        pd_in_features=model_cfg["optical_dim"],
+        latent_dim=model_cfg["latent_dim"],
+        num_points=model_cfg["num_points"],
+        tnet1=model_cfg["tnet1"],
+        tnet2=model_cfg["tnet2"],
+    )
+    pd2latent_ckpt = torch.load(best_path, map_location=device)
+    combined_model.pd2latent.load_state_dict(pd2latent_ckpt["model_state_dict"])
+    combined_model.decoder.load_state_dict(ae.decoder.state_dict())
+
+    torch.save({
+        "epoch": pd2latent_ckpt.get("epoch"),
+        "val_loss": best_val,
+        "optical_dim": model_cfg["optical_dim"],
+        "latent_dim": model_cfg["latent_dim"],
+        "num_points": model_cfg["num_points"],
+        "tnet1": model_cfg["tnet1"],
+        "tnet2": model_cfg["tnet2"],
+        "pd2latent_state_dict": combined_model.pd2latent.state_dict(),
+        "decoder_state_dict": combined_model.decoder.state_dict(),
+    }, combined_path)
+    print(f"Combined model saved to {combined_path}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config/config.yaml", help="Path to YAML config file")
+    parser.add_argument("--run-name", default=None, help="Override output.run_name from config")
+    parser.add_argument("--ae-run-name", default=None, help="Load AE weights from a different run (overrides train_optical.ae_run_name)")
+    args = parser.parse_args()
+
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+
+    if args.run_name is not None:
+        cfg["output"]["run_name"] = args.run_name
+    if args.ae_run_name is not None:
+        cfg["train_optical"]["ae_run_name"] = args.ae_run_name
+
+    import random
+    random.seed(cfg["seed"])
+    np.random.seed(cfg["seed"])
+    torch.manual_seed(cfg["seed"])
+    torch.backends.cudnn.benchmark = True
+
+    main(cfg)

@@ -100,26 +100,3 @@ def chamfer_distance(pred_pts: np.ndarray, gt_pts: np.ndarray, squared: bool = T
         return float(d2_P_to_G.mean() + d2_G_to_P.mean())
     else:
         return float(np.sqrt(d2_P_to_G).mean() + np.sqrt(d2_G_to_P).mean())
-
-
-# Optional convenience wrapper
-def evaluate_metrics(gt_pts: np.ndarray, pred_pts: np.ndarray, chamfer_squared: bool = True) -> dict:
-    """Return a dict of metrics for convenience: {'rmse_z': ..., 'chamfer': ...}"""
-    return {
-        "rmse_z": compute_rmse_z(gt_pts, pred_pts),
-        "chamfer": chamfer_distance(pred_pts, gt_pts, squared=chamfer_squared),
-    }
-
-
-if __name__ == "__main__":
-    # Simple self-test on a tiny synthetic example
-    # GT: flat plane z=0; Pred: same plane with +1mm bias in z and slight XY jitter
-    rng = np.random.default_rng(0)
-    N = 1024
-    gt = rng.uniform(0, 120, size=(N, 2))
-    gt = np.hstack([gt, np.zeros((N, 1))])
-    pred_xy = gt[:, :2] + rng.normal(scale=0.5, size=(N, 2))
-    pred_z = 1.0 + rng.normal(scale=0.1, size=(N,))  # +1 offset
-    pred = np.column_stack([pred_xy, pred_z])
-    res = evaluate_metrics(gt, pred, chamfer_squared=True)
-    print(res)
