@@ -64,12 +64,13 @@ def _depth_to_points_mm_fixedgrid(depth_u16, mask, K, scale_m, stride=2):
 
 # ---------- Dataset ----------
 class WaveguideDataset(Dataset):
-    def __init__(self, folder: str, stride: int = 1, x_range=(-10,200), y_range=(-10,200), z_range=(180,250)):
+    def __init__(self, folder: str, stride: int = 1, x_range=(-10,200), y_range=(-10,200), z_range=(180,250), verbose: bool = True):
         self.folder = Path(folder)
         self.roi_mask, self.scale_m, self.K = _load_meta(self.folder / "meta.npz")
 
         self.stride = stride
         self.x_range, self.y_range, self.z_range = x_range, y_range, z_range
+        self.verbose = verbose
 
         # Pair depth + optical
         self.depth_files = sorted(self.folder.glob("frame_*_depth.npy"))
@@ -84,6 +85,10 @@ class WaveguideDataset(Dataset):
         self.valid_indices = self._load_or_build_valid_indices()
         self.col_min, self.col_max = self._load_or_build_minmax()
 
+    def _log(self, msg: str):
+        if self.verbose:
+            print(msg)
+
     def _load_or_build_valid_indices(self):
         valid_indices = []
         if self.valid_idx_path.exists():
@@ -92,8 +97,8 @@ class WaveguideDataset(Dataset):
                 cached = [int(line.strip()) for line in self.valid_idx_path.read_text().splitlines() if line.strip()]
             except Exception:
                 cached = []
-            
-            print(f"Loaded {len(cached)} cached valid indices")
+
+            self._log(f"Loaded {len(cached)} cached valid indices")
 
             # Keep only indices that still make sense (file exists, in-range)
             n = len(self.depth_files)
@@ -105,7 +110,7 @@ class WaveguideDataset(Dataset):
                 return valid_indices
 
         # Otherwise, compute valid indices from scratch
-        print("No cached valid indices found. Building valid indices from scratch...")
+        self._log("No cached valid indices found. Building valid indices from scratch...")
         for i, ofile in enumerate(self.optical_files):
             if not ofile.exists():
                 continue
@@ -135,21 +140,21 @@ class WaveguideDataset(Dataset):
         if self.optical_minmax_path.exists():
             try:
                 arr = np.load(self.optical_minmax_path)
-                if isinstance(arr, np.ndarray) and arr.shape == (2, 180):
-                    print("Loaded cached optical min/max")
+                if isinstance(arr, np.ndarray) and arr.shape == (2, len(self._cols)):
+                    self._log("Loaded cached optical min/max")
                     col_min, col_max = arr[0].astype(np.float32), arr[1].astype(np.float32)
                     return col_min, col_max
             except Exception:
                 pass
         
-        print("No cached optical min/max found. Building from scratch...")
+        self._log("No cached optical min/max found. Building from scratch...")
         if len(self.valid_indices) == 0:
-            col_min = np.zeros((30,), dtype=np.float32)
-            col_max = np.ones((30,), dtype=np.float32)
+            col_min = np.zeros((180,), dtype=np.float32)
+            col_max = np.ones((180,), dtype=np.float32)
             return col_min, col_max
 
-        col_min = np.full((30,), np.inf, dtype=np.float32)
-        col_max = np.full((30,), -np.inf, dtype=np.float32)
+        col_min = np.full((180,), np.inf, dtype=np.float32)
+        col_max = np.full((180,), -np.inf, dtype=np.float32)
         for i in self.valid_indices:
             x = np.load(self.optical_files[i]).astype(np.float32)
             vec = np.asarray(x, dtype=np.float32)[self._cols]

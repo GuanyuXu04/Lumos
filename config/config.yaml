@@ -7,7 +7,7 @@ data:
   val_split: 0.1
 
 model:
-  optical_dim: 30
+  optical_dim: 180
   latent_dim: 512
   num_points: 4096
   tnet1: false
@@ -18,7 +18,7 @@ output:
   run_name: default_run
 
 train_ae:
-  gpus: 1  # "auto" uses all available GPUs; set to 1 to force single-GPU
+  gpus: auto  # "auto" uses all available GPUs; set to 1 to force single-GPU
   batch_size: 64
   max_epochs: 25
   base_lr: 0.001

@@ -76,7 +76,19 @@ def train_loop(rank: int, cfg: dict):
     os.makedirs(fig_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    dataset = WaveguideDataset(data_cfg["path"], stride=data_cfg["stride"])
+    # In DDP, let rank 0 build any missing cache files first, then barrier so
+    # other ranks always load from cache (avoids redundant computation and
+    # simultaneous writes to the same cache file).
+    if is_dist():
+        import torch.distributed as dist
+        if local_rank != 0:
+            dist.barrier()
+
+    dataset = WaveguideDataset(data_cfg["path"], stride=data_cfg["stride"], verbose=is_main())
+
+    if is_dist():
+        if local_rank == 0:
+            dist.barrier()
     n_total = len(dataset)
     n_train = int(data_cfg["train_split"] * n_total)
     n_val = int(data_cfg["val_split"] * n_total)
