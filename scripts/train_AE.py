@@ -14,8 +14,8 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from model import PCAutoencoder
-from data import WaveguideDataset
+from lumos.model import PCAutoencoder
+from lumos.data import WaveguideDataset
 
 # -------------------- DDP utils --------------------
 def is_dist() -> bool:

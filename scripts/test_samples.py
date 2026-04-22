@@ -5,8 +5,8 @@ import matplotlib.pyplot as plt
 import imageio.v2 as imageio
 import pandas as pd  # NEW
 
-from model import ShapeNet
-from data import _load_meta, _depth_to_points_mm_fixedgrid  # 直接用 data.py 的转换函数
+from lumos.model import ShapeNet
+from lumos.data import _load_meta, _depth_to_points_mm_fixedgrid
 
 # ---------------- User config ----------------
 MODEL_PATH = "checkpoints/best_combined_500.pth"

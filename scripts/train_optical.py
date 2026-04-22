@@ -5,8 +5,8 @@ import torch
 import random
 from torch.utils.data import DataLoader, random_split
 import torch.optim as optim
-from model import PD2Latent, PCAutoencoder, ShapeNet
-from data import WaveguideDataset
+from lumos.model import PD2Latent, PCAutoencoder, ShapeNet
+from lumos.data import WaveguideDataset
 
 torch.backends.cudnn.benchmark = True
 random.seed(56)

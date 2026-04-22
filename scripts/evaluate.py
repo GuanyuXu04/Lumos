@@ -2,10 +2,10 @@ import os
 import torch
 import random
 import numpy as np
-from model import ShapeNet
+from lumos.model import ShapeNet
 import matplotlib.pyplot as plt
-from data import WaveguideDataset
-from metrics import F_score_batched, chamfer_distance_batched, F_score
+from lumos.data import WaveguideDataset
+from lumos.metrics import F_score_batched, chamfer_distance_batched, F_score
 from torch.utils.data import DataLoader
 from torch.utils.data import Subset
 
