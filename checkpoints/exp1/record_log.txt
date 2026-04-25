@@ -1,5 +1,0 @@
-Config: {'seed': 56, 'data': {'path': 'Data/Combined_Data', 'stride': 3, 'train_split': 0.8, 'val_split': 0.1}, 'model': {'optical_dim': 180, 'latent_dim': 512, 'num_points': 4096, 'tnet1': False, 'tnet2': False}, 'output': {'base_dir': 'checkpoints', 'run_name': 'exp1'}, 'train_ae': {'gpus': 'auto', 'batch_size': 64, 'max_epochs': 25, 'base_lr': 0.001, 'bn_init_decay': 0.9, 'bn_decay_rate': 0.5, 'bn_decay_step': 200000, 'bn_decay_clip': 0.5, 'early_stop_patience': 20, 'num_workers': 4, 'loss': {'repulsion_k': 10, 'repulsion_h': 0.5}, 'scheduler': {'factor': 0.2, 'patience': 3}}, 'train_optical': {'batch_size': 64, 'epochs': 500, 'lr': 0.001, 'early_stop_patience': 20, 'num_workers': 4, 'ae_run_name': None}}
-epoch,train_loss,val_loss
-1,169940784.000000,114424888.000000
-2,57763568.000000,11839127.000000
-3,2767216.750000,203454.062500
