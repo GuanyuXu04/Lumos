@@ -7,31 +7,6 @@ The current pipeline follows a two-stage design:
 1. **Point-cloud autoencoder**: learns a compact latent representation of membrane geometry from RealSense depth-derived point clouds.
 2. **PD-to-latent regression**: learns a mapping from optical readings to that latent representation. At inference time, the trained decoder converts the predicted latent vector into a reconstructed 3D point cloud.
 
----
-
-## Repository layout
-
-```text
-Lumos/
-├── config/
-│   └── config.yaml          # Training, model, data, and output configuration
-├── lumos/
-│   ├── config.py            # Hardware and feature-selection configuration
-│   ├── data.py              # Dataset loading, depth-to-point-cloud conversion, feature selection
-│   ├── ddp.py               # Distributed-training helpers
-│   ├── losses.py            # Chamfer distance and repulsion loss
-│   ├── metrics.py           # Evaluation metrics
-│   ├── model.py             # Autoencoder, PD-to-latent network, combined ShapeNet model
-│   └── viz.py               # Visualization helpers
-├── scripts/
-│   ├── train_AE.py          # Train point-cloud autoencoder
-│   ├── evaluate_AE.py       # Evaluate point-cloud autoencoder
-│   ├── train_optical.py     # Train optical PD-to-latent model
-│   └── evaluate.py          # Evaluate final optical-to-shape model
-└── tools/
-    ├── collect_data.py      # Collect paired RealSense depth + optical readings
-    └── interface.py         # Real-time serial inference and visualization
-```
 
 ---
 
