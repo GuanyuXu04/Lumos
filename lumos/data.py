@@ -1,8 +1,10 @@
 from pathlib import Path
-from typing import Tuple, List
+from typing import Optional, Sequence, Tuple, List
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from torch.utils.data import Dataset
+
+from lumos.config import HARDWARE, FEATURES, HardwareConfig
 
 # ---------- helpers ----------
 def _load_meta(meta_path: str):
@@ -64,19 +66,41 @@ def _depth_to_points_mm_fixedgrid(depth_u16, mask, K, scale_m, stride=2):
 
 # ---------- Dataset ----------
 class WaveguideDataset(Dataset):
-    def __init__(self, folder: str, stride: int = 1, x_range=(-10,200), y_range=(-10,200), z_range=(180,250), verbose: bool = True):
+    def __init__(
+        self,
+        folder: str,
+        stride: int = 1,
+        *,
+        leds: Optional[Sequence[int]] = None,
+        pds: Optional[Sequence[int]] = None,
+        hardware: Optional[HardwareConfig] = None,
+        x_range: Optional[Tuple[float, float]] = None,
+        y_range: Optional[Tuple[float, float]] = None,
+        z_range: Optional[Tuple[float, float]] = None,
+        verbose: bool = True,
+    ):
         self.folder = Path(folder)
         self.roi_mask, self.scale_m, self.K = _load_meta(self.folder / "meta.npz")
 
+        self.hardware = hardware if hardware is not None else HARDWARE
+        self.leds = list(leds) if leds is not None else list(FEATURES.leds)
+        self.pds = list(pds) if pds is not None else list(FEATURES.pds)
+        self._validate_selection()
+
         self.stride = stride
-        self.x_range, self.y_range, self.z_range = x_range, y_range, z_range
+        self.x_range = x_range if x_range is not None else self.hardware.x_range
+        self.y_range = y_range if y_range is not None else self.hardware.y_range
+        self.z_range = z_range if z_range is not None else self.hardware.z_range
         self.verbose = verbose
 
         # Pair depth + optical
         self.depth_files = sorted(self.folder.glob("frame_*_depth.npy"))
         self.optical_files = [self.folder / f.stem.replace("_depth","_optical.npy") for f in self.depth_files]
 
-        self._cols = np.array([13 + 7 * j for j in range(30)], dtype=np.int64)
+        # Optical rows: [timestamp, L0P0, L0P1, ..., L0P_M, L1P0, ..., L_N P_M]
+        # where N = num_leds, M = num_pds. So index of (L_i, P_j) = 1 + i*(M+1) + j.
+        pd_stride = self.hardware.num_pds + 1
+        self._cols = np.array([1 + led * pd_stride + pd for led in self.leds for pd in self.pds], dtype=np.int64)
 
         # Cache paths
         self.valid_idx_path = self.folder / "valid_idx.txt"
@@ -88,6 +112,14 @@ class WaveguideDataset(Dataset):
     def _log(self, msg: str):
         if self.verbose:
             print(msg)
+
+    def _validate_selection(self):
+        for led in self.leds:
+            if not 0 <= led <= self.hardware.num_leds:
+                raise ValueError(f"LED index {led} out of range [0, {self.hardware.num_leds}]")
+        for pd in self.pds:
+            if not 0 <= pd <= self.hardware.num_pds:
+                raise ValueError(f"PD index {pd} out of range [0, {self.hardware.num_pds}]")
 
     def _load_or_build_valid_indices(self):
         valid_indices = []
@@ -148,13 +180,14 @@ class WaveguideDataset(Dataset):
                 pass
         
         self._log("No cached optical min/max found. Building from scratch...")
+        n_features = len(self._cols)
         if len(self.valid_indices) == 0:
-            col_min = np.zeros((180,), dtype=np.float32)
-            col_max = np.ones((180,), dtype=np.float32)
+            col_min = np.zeros((n_features,), dtype=np.float32)
+            col_max = np.ones((n_features,), dtype=np.float32)
             return col_min, col_max
 
-        col_min = np.full((180,), np.inf, dtype=np.float32)
-        col_max = np.full((180,), -np.inf, dtype=np.float32)
+        col_min = np.full((n_features,), np.inf, dtype=np.float32)
+        col_max = np.full((n_features,), -np.inf, dtype=np.float32)
         for i in self.valid_indices:
             x = np.load(self.optical_files[i]).astype(np.float32)
             vec = np.asarray(x, dtype=np.float32)[self._cols]

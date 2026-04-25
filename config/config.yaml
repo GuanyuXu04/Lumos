@@ -19,7 +19,7 @@ output:
 
 train_ae:
   gpus: auto  # "auto" uses all available GPUs; set to 1 to force single-GPU
-  batch_size: 64
+  batch_size: 16
   max_epochs: 25
   base_lr: 0.001
   # BN momentum schedule
@@ -44,3 +44,7 @@ train_optical:
   num_workers: 4
   # Override to load AE weights from a different run. If null, uses output.run_name.
   ae_run_name: null
+
+ablation:
+  repeats: 12     # number of training repetitions per K (different seeds)
+  base_seed: 1000 # seeds used are base_seed, base_seed+1, ..., base_seed+repeats-1

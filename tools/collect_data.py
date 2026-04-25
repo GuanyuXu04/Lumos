@@ -274,6 +274,31 @@ def main():
     start_id = _next_start_id(COMBINED_DIR)
     print(f"[id] Start global frame id = {start_id} (scan Combined_Data/)")
 
+    # ---- Restore session config from existing meta (if any) ----
+    # The session is identified by SESSION_DIR. Once meta.npz is written, every
+    # subsequent run in the same session must capture with the SAME camera
+    # config so frames stay self-consistent. If a run silently reset the
+    # hardware to different depth_units / exposure / ROI, downstream code
+    # interprets old frames with the wrong scale (this caused the i<161489
+    # patches in lumos/data.py).
+    meta_path = out_dir / "meta.npz"
+    existing_meta = None
+    if meta_path.exists():
+        existing_meta = np.load(meta_path, allow_pickle=True)
+        global ENABLE_EMITTER, LASER_POWER_ABS, USE_MANUAL_EXPOSURE
+        global MANUAL_EXPOSURE_US, MANUAL_GAIN, ENABLE_GLOBAL_TIME, DEPTH_UNITS_VALUE
+        ENABLE_EMITTER      = bool(int(existing_meta["cfg_emitter"][0]))
+        LASER_POWER_ABS     = float(existing_meta["cfg_laser_power"][0])
+        USE_MANUAL_EXPOSURE = bool(int(existing_meta["cfg_manual_exposure"][0]))
+        MANUAL_EXPOSURE_US  = float(existing_meta["cfg_exposure_us"][0])
+        MANUAL_GAIN         = float(existing_meta["cfg_gain"][0])
+        ENABLE_GLOBAL_TIME  = bool(int(existing_meta["cfg_global_time_enabled"][0]))
+        DEPTH_UNITS_VALUE   = float(existing_meta["cfg_depth_units_target"][0])
+        print(f"[meta] Restoring camera config from {meta_path}")
+    elif start_id > 0:
+        print(f"[warn] {start_id} frames already in {COMBINED_DIR} but no meta.npz; "
+              "those frames will be re-keyed to a fresh meta")
+
     # ---- Start RealSense ----
     pipeline, profile = start_depth_pipeline()
     depth_sensor = profile.get_device().first_depth_sensor()
@@ -293,43 +318,73 @@ def main():
 
     filters = create_filters()
 
-    # ---- Fixed central ROI; wait Enter to start ----
-    try:
-        poly_pts, (x0, y0), roi_mask = select_center_square_live(pipeline, colorizer, filters,
-                                                                 w_box=230, h_box=230)
-    except KeyboardInterrupt:
-        pipeline.stop(); cv2.destroyAllWindows()
-        return
+    if existing_meta is not None:
+        # Validate that the camera actually accepted the requested config; if it
+        # didn't, frames captured now would be inconsistent with prior frames
+        # in this session. Refuse rather than silently corrupt the dataset.
+        saved_scale = float(existing_meta["depth_scale_m_per_unit"])
+        if abs(depth_scale - saved_scale) > 1e-9:
+            pipeline.stop()
+            raise RuntimeError(
+                f"Depth scale mismatch: camera reports {depth_scale}, session meta "
+                f"requires {saved_scale}. The camera likely did not accept "
+                f"depth_units={DEPTH_UNITS_VALUE}. Aborting to keep "
+                f"{COMBINED_DIR} consistent."
+            )
 
-    h_roi, w_roi = roi_mask.shape
-    K_roi = K_full.copy()
-    K_roi[0, 2] -= float(x0)
-    K_roi[1, 2] -= float(y0)
+        saved_size = existing_meta["depth_size_full_wh"]
+        if int(saved_size[0]) != W_full or int(saved_size[1]) != H_full:
+            pipeline.stop()
+            raise RuntimeError(
+                f"Depth stream size mismatch: camera {W_full}x{H_full}, session "
+                f"meta {int(saved_size[0])}x{int(saved_size[1])}."
+            )
 
-    # ---- Save meta once (per session) ----
-    meta = {
-        "roi_origin_xy": np.array([x0, y0], dtype=np.int32),
-        "roi_mask": roi_mask.astype(np.uint8),
-        "roi_polygon_xy": poly_pts.astype(np.int32),
-        "depth_scale_m_per_unit": depth_scale,
-        "depth_K_full": K_full,
-        "depth_size_full_wh": np.array([W_full, H_full], dtype=np.int32),
-        "depth_K_roi": K_roi,
-        "depth_size_roi_wh": np.array([w_roi, h_roi], dtype=np.int32),
-        "depth_dist_coeffs": dist_coeffs,
-        "depth_dist_model": np.array([depth_model], dtype=np.int32),
-        "labels": np.array(build_labels(), dtype=object),
+        # Reuse the saved ROI verbatim — no live selector.
+        x0, y0 = (int(v) for v in existing_meta["roi_origin_xy"])
+        roi_mask = existing_meta["roi_mask"].astype(np.uint8)
+        poly_pts = existing_meta["roi_polygon_xy"].astype(np.int32)
+        h_roi, w_roi = roi_mask.shape
+        K_roi = existing_meta["depth_K_roi"].astype(np.float64)
+        print(f"[meta] Reusing saved ROI origin=({x0},{y0}) size={w_roi}x{h_roi}")
+    else:
+        # ---- First run in this session: pick ROI live and persist meta ----
+        try:
+            poly_pts, (x0, y0), roi_mask = select_center_square_live(
+                pipeline, colorizer, filters, w_box=230, h_box=230
+            )
+        except KeyboardInterrupt:
+            pipeline.stop(); cv2.destroyAllWindows()
+            return
 
-        # key runtime cfg
-        "cfg_emitter": np.array([int(ENABLE_EMITTER)], dtype=np.int32),
-        "cfg_laser_power": np.array([LASER_POWER_ABS], dtype=np.float32),
-        "cfg_manual_exposure": np.array([int(USE_MANUAL_EXPOSURE)], dtype=np.int32),
-        "cfg_exposure_us": np.array([MANUAL_EXPOSURE_US], dtype=np.float32),
-        "cfg_gain": np.array([MANUAL_GAIN], dtype=np.float32),
-        "cfg_global_time_enabled": np.array([int(ENABLE_GLOBAL_TIME)], dtype=np.int32),
-        "cfg_depth_units_target": np.array([DEPTH_UNITS_VALUE], dtype=np.float32),
-    }
-    np.savez_compressed(out_dir / "meta.npz", **meta)
+        h_roi, w_roi = roi_mask.shape
+        K_roi = K_full.copy()
+        K_roi[0, 2] -= float(x0)
+        K_roi[1, 2] -= float(y0)
+
+        meta = {
+            "roi_origin_xy": np.array([x0, y0], dtype=np.int32),
+            "roi_mask": roi_mask.astype(np.uint8),
+            "roi_polygon_xy": poly_pts.astype(np.int32),
+            "depth_scale_m_per_unit": depth_scale,
+            "depth_K_full": K_full,
+            "depth_size_full_wh": np.array([W_full, H_full], dtype=np.int32),
+            "depth_K_roi": K_roi,
+            "depth_size_roi_wh": np.array([w_roi, h_roi], dtype=np.int32),
+            "depth_dist_coeffs": dist_coeffs,
+            "depth_dist_model": np.array([depth_model], dtype=np.int32),
+            "labels": np.array(build_labels(), dtype=object),
+
+            # key runtime cfg
+            "cfg_emitter": np.array([int(ENABLE_EMITTER)], dtype=np.int32),
+            "cfg_laser_power": np.array([LASER_POWER_ABS], dtype=np.float32),
+            "cfg_manual_exposure": np.array([int(USE_MANUAL_EXPOSURE)], dtype=np.int32),
+            "cfg_exposure_us": np.array([MANUAL_EXPOSURE_US], dtype=np.float32),
+            "cfg_gain": np.array([MANUAL_GAIN], dtype=np.float32),
+            "cfg_global_time_enabled": np.array([int(ENABLE_GLOBAL_TIME)], dtype=np.int32),
+            "cfg_depth_units_target": np.array([DEPTH_UNITS_VALUE], dtype=np.float32),
+        }
+        np.savez_compressed(meta_path, **meta)
 
     # ---- Serial ----
     try:
