@@ -1,25 +1,3 @@
-"""
-Read RealSense depth + Optical Sensor (COM9) in one loop (no threads).
-
-D435 settings:
-- 848x480 @ 30 FPS, z16
-- Emitter enabled; laser_power=360
-- Auto Exposure OFF; exposure=1000 us; gain=16
-- Global Time Enabled
-- Try depth_units = 0.0005 (if supported)
-
-== ROI ==
-Use a fixed 230x230 square centered in the depth frame.
-Show live view with square; press Enter to start logging.
-
-== Naming ==
-All per-frame .npy files go to ./Combined_Data/
-At program start, scan Combined_Data and start numbering from (max_id + 1).
-Saved per frame:
-- Combined_Data/frame_{id:06d}_depth.npy
-- Combined_Data/frame_{id:06d}_optical.npy
-"""
-
 from pathlib import Path
 from datetime import datetime
 import time
@@ -30,59 +8,49 @@ import cv2
 import serial
 import pyrealsense2 as rs
 
-# -------------------- User settings --------------------
-SERIAL_PORT   = "COM6"
-BAUD_RATE     = 2_000_000
-SER_TIMEOUT   = 0.0             # non-blocking
-EXPECTED_VALS = 218
+# Membrane sensor configuration
+SENSOR_WIDTH = 275 # Width of the membrane
+SENSOR_HEIGHT = 275 # Height of the membrane
+SESSION_NAME = "Combined_Data"
+SESSION_DIR = Path(__file__).parent.parent / "Data" / SESSION_NAME
+NUM_LED = 30
+NUM_PD = 6
 
-SESSION_DIR   = Path("Combined_Data")  # per-run meta / logs
-COMBINED_DIR  = SESSION_DIR
-SHOW_WINDOW   = "RealSense Depth (center square ROI / press Enter to start)"
+# Serial port configurations
+BAUD_RATE = 2000000
+SERIAL_PORT = "COM6" # Serial port
+EXPECTED_VALS = 1 + (NUM_LED + 1) * (NUM_PD + 1) # 1 timestamp + (30+1) * (6+1) values
 
-# Depth stream format
-DEPTH_W, DEPTH_H, DEPTH_FPS = 848, 480, 30
-
-MAX_PAIRS = 3000000
-
-# ---------------- Depth configuration (match screenshot) ----------------
+# RealSense D435 Configurations
+DEPTH_W, DEPTH_H, DEPTH_FPS = 848, 480, 30 # Depth stream format
+DEPTH_UNITS_VALUE = 0.0005
+LASER_POWER_ABS = 360.0
+MANUAL_EXPOSURE_US  = 1000.0
+MANUAL_GAIN = 16.0
 USE_HIGH_DENSITY_PRESET = False
 ENABLE_EMITTER = True
-LASER_POWER_ABS = 360.0
 SET_CONFIDENCE_THRESHOLD = False
 CONFIDENCE_THRESHOLD = 3
-
 USE_MANUAL_EXPOSURE = True
-MANUAL_EXPOSURE_US  = 1000.0
-MANUAL_GAIN         = 16.0
-
 ENABLE_GLOBAL_TIME = True
 TRY_SET_DEPTH_UNITS = True
-DEPTH_UNITS_VALUE = 0.0005
-
-# ---------------- Optional post-processing ----------------
 USE_DECIMATION = False
 DECIMATION_MAG = 1
-USE_SPATIAL    = False
+USE_SPATIAL = False
 SPATIAL_MAG = 1
 SPATIAL_SMOOTH_ALPHA = 0.25
 SPATIAL_SMOOTH_DELTA = 10
 SPATIAL_HOLES_FILL = 2
-USE_TEMPORAL   = True
+USE_TEMPORAL = True
 USE_HOLE_FILLING = True
 HOLE_FILLING_MODE = 0
-# ---------------------------------------------------------------------
-
-# ---------- Preview performance knobs ----------
-PREVIEW_EVERY   = 10
+PREVIEW_EVERY = 10
 PREVIEW_DOWNSCALE = 2
-# ------------------------------------------------------
-
 
 def build_labels() -> list[str]:
     labels = ["time_ms"]
-    for led in range(31):
-        for pd in range(7):
+    for led in range(NUM_LED + 1):
+        for pd in range(NUM_PD + 1):
             labels.append(f"L{led}P{pd}")
     assert len(labels) == EXPECTED_VALS
     return labels
@@ -195,9 +163,9 @@ def process_depth_frame(depth_frame, filters):
 
 
 def select_center_square_live(pipeline: rs.pipeline, colorizer: rs.colorizer, filters,
-                              w_box: int = 230, h_box: int = 230):
+                              w_box: int = SENSOR_WIDTH, h_box: int = SENSOR_HEIGHT):
     """Live view with fixed central square; press Enter to confirm."""
-    cv2.namedWindow(SHOW_WINDOW, cv2.WINDOW_NORMAL)
+    cv2.namedWindow("RealSense Depth (press Enter to start)", cv2.WINDOW_NORMAL)
 
     x0 = y0 = None
     roi_mask_crop = None
@@ -230,7 +198,7 @@ def select_center_square_live(pipeline: rs.pipeline, colorizer: rs.colorizer, fi
         cv2.rectangle(disp, (x0, y0), (x0 + w_box - 1, y0 + h_box - 1), (0, 255, 0), 2)
         cv2.putText(disp, "Align inside square, press Enter to start (q/Esc to quit)",
                     (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
-        cv2.imshow(SHOW_WINDOW, disp)
+        cv2.imshow("RealSense Depth (press Enter to start)", disp)
 
         key = cv2.waitKey(1) & 0xFF
         if key in (27, ord('q')):
@@ -241,7 +209,31 @@ def select_center_square_live(pipeline: rs.pipeline, colorizer: rs.colorizer, fi
     return poly_pts, (int(x0), int(y0)), roi_mask_crop
 
 
-# ---------- Global ID helpers ----------
+def wait_for_start_live(pipeline: rs.pipeline, colorizer: rs.colorizer, filters,
+                        poly_pts: np.ndarray):
+    """Show live depth feed with existing ROI polygon; press Enter to confirm."""
+    win = "RealSense Depth (press Enter to start)"
+    cv2.namedWindow(win, cv2.WINDOW_NORMAL)
+    while True:
+        frames = pipeline.wait_for_frames()
+        df = frames.get_depth_frame()
+        if not df:
+            continue
+        if filters:
+            df = process_depth_frame(df, filters)
+        disp = np.asanyarray(colorizer.colorize(df).get_data())
+        cv2.polylines(disp, [poly_pts], True, (0, 255, 0), 2)
+        cv2.putText(disp, "Restored session ROI shown. Press Enter to start (q/Esc to quit)",
+                    (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+        cv2.imshow(win, disp)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (27, ord('q')):
+            raise KeyboardInterrupt("User quit before start.")
+        if key == 13:
+            break
+
+
+# Global ID helpers
 _ID_REGEX = re.compile(r"frame_(\d+)_.*\.npy$", re.IGNORECASE)
 
 def _scan_max_id(directory: Path) -> int:
@@ -270,11 +262,11 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # combined dir for global frames
-    COMBINED_DIR.mkdir(parents=True, exist_ok=True)
-    start_id = _next_start_id(COMBINED_DIR)
-    print(f"[id] Start global frame id = {start_id} (scan Combined_Data/)")
+    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    start_id = _next_start_id(SESSION_DIR)
+    print(f"[id] Start global frame id = {start_id} (scan {SESSION_NAME}/)")
 
-    # ---- Restore session config from existing meta (if any) ----
+    # Restore session config from existing meta (if any)
     # The session is identified by SESSION_DIR. Once meta.npz is written, every
     # subsequent run in the same session must capture with the SAME camera
     # config so frames stay self-consistent. If a run silently reset the
@@ -296,7 +288,7 @@ def main():
         DEPTH_UNITS_VALUE   = float(existing_meta["cfg_depth_units_target"][0])
         print(f"[meta] Restoring camera config from {meta_path}")
     elif start_id > 0:
-        print(f"[warn] {start_id} frames already in {COMBINED_DIR} but no meta.npz; "
+        print(f"[warn] {start_id} frames already in {SESSION_DIR} but no meta.npz; "
               "those frames will be re-keyed to a fresh meta")
 
     # ---- Start RealSense ----
@@ -329,7 +321,7 @@ def main():
                 f"Depth scale mismatch: camera reports {depth_scale}, session meta "
                 f"requires {saved_scale}. The camera likely did not accept "
                 f"depth_units={DEPTH_UNITS_VALUE}. Aborting to keep "
-                f"{COMBINED_DIR} consistent."
+                f"{SESSION_DIR} consistent."
             )
 
         saved_size = existing_meta["depth_size_full_wh"]
@@ -347,11 +339,16 @@ def main():
         h_roi, w_roi = roi_mask.shape
         K_roi = existing_meta["depth_K_roi"].astype(np.float64)
         print(f"[meta] Reusing saved ROI origin=({x0},{y0}) size={w_roi}x{h_roi}")
+        try:
+            wait_for_start_live(pipeline, colorizer, filters, poly_pts)
+        except KeyboardInterrupt:
+            pipeline.stop(); cv2.destroyAllWindows()
+            return
     else:
         # ---- First run in this session: pick ROI live and persist meta ----
         try:
             poly_pts, (x0, y0), roi_mask = select_center_square_live(
-                pipeline, colorizer, filters, w_box=230, h_box=230
+                pipeline, colorizer, filters, w_box=SENSOR_WIDTH, h_box=SENSOR_HEIGHT
             )
         except KeyboardInterrupt:
             pipeline.stop(); cv2.destroyAllWindows()
@@ -388,7 +385,7 @@ def main():
 
     # ---- Serial ----
     try:
-        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=SER_TIMEOUT)
+        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=0.0)
         ser.reset_input_buffer()
     except Exception as e:
         pipeline.stop(); cv2.destroyAllWindows()
@@ -403,9 +400,6 @@ def main():
 
     try:
         while True:
-            if MAX_PAIRS and pairs >= MAX_PAIRS:
-                break
-
             frames = pipeline.wait_for_frames()
             d = frames.get_depth_frame()
             if not d:
@@ -442,9 +436,9 @@ def main():
                 # compute global id
                 global_id = start_id + pairs
 
-                # save immediately into Combined_Data
-                np.save(COMBINED_DIR / f"frame_{global_id:06d}_depth.npy", crop.astype(np.uint16))
-                np.save(COMBINED_DIR / f"frame_{global_id:06d}_optical.npy", ovals.astype(np.int32))
+                # save immediately into SESSION_NAME
+                np.save(SESSION_DIR / f"frame_{global_id:06d}_depth.npy", crop.astype(np.uint16))
+                np.save(SESSION_DIR / f"frame_{global_id:06d}_optical.npy", ovals.astype(np.int32))
 
                 pairs += 1
                 pending_optical = None
@@ -456,7 +450,7 @@ def main():
                     if PREVIEW_DOWNSCALE > 1:
                         disp = cv2.resize(disp, (disp.shape[1] // PREVIEW_DOWNSCALE,
                                                  disp.shape[0] // PREVIEW_DOWNSCALE))
-                    cv2.imshow(SHOW_WINDOW, disp)
+                    cv2.imshow("RealSense Depth (press Enter to start)", disp)
 
             if cv2.waitKey(1) & 0xFF in (27, ord('q')):
                 break
@@ -471,7 +465,7 @@ def main():
         except: pass
         cv2.destroyAllWindows()
 
-    print(f"Saved {pairs} pairs into {COMBINED_DIR} (starting from id {start_id})")
+    print(f"Saved {pairs} pairs into {SESSION_DIR} (starting from id {start_id})")
 
 
 if __name__ == "__main__":
