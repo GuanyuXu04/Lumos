@@ -149,8 +149,6 @@ class WaveguideDataset(Dataset):
             depth = np.load(self.depth_files[i], mmap_mode="r")
             pts = _depth_to_points_mm_fixedgrid(depth, self.roi_mask, self.K, self.scale_m, stride=self.stride)
             ########################################################
-            if i < 161489:
-                pts *= 2.0
             ########################################################
             
             if pts.shape[0] == 0:
@@ -228,8 +226,6 @@ class WaveguideDataset(Dataset):
 
         pts = _depth_to_points_mm_fixedgrid(depth, self.roi_mask, self.K, self.scale_m,stride=self.stride)
         ########################################################
-        if i < 161489:
-            pts *= 2.0
         ########################################################
         denom = (self.col_max - self.col_min).astype(np.float32)
         safe_denom = np.where(denom > 0.0, denom, 1.0).astype(np.float32)

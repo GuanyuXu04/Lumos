@@ -1,7 +1,7 @@
 seed: 56
 
 data:
-  path: Data/Combined_Data
+  path: Data/Toy_Data
   stride: 3
   train_split: 0.8
   val_split: 0.1

@@ -22,8 +22,8 @@ class HardwareConfig:
     num_pds: int = 6
 
     # Bounding box (mm) that depth points must fall inside to count as valid.
-    x_range: Tuple[float, float] = (-10.0, 200.0)
-    y_range: Tuple[float, float] = (-10.0, 200.0)
+    x_range: Tuple[float, float] = (-10.0, 280.0)
+    y_range: Tuple[float, float] = (-10.0, 280.0)
     z_range: Tuple[float, float] = (180.0, 250.0)
 
 

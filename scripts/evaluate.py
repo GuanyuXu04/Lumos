@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 from lumos.model import ShapeNet
 from lumos.data import WaveguideDataset
 from lumos.metrics import F_score_batched, chamfer_distance_batched, F_score
-from lumos.viz import plot_fscore_vs_tau, plot_pc_pair_scatter
+from lumos.viz import plot_fscore_vs_tau, plot_pc_pair
 from torch.utils.data import DataLoader, Subset
 
 
@@ -90,7 +90,7 @@ if __name__ == "__main__":
             pred_pc = model(optical_tensor).squeeze(0).cpu().numpy()
         f_score = F_score(origin_pc, pred_pc, tau=TAU_VIZ)
         print(f"Sample {idx}: F-score @ {TAU_VIZ} mm = {f_score:.4f}")
-        plot_pc_pair_scatter(
+        plot_pc_pair(
             origin_pc, pred_pc,
             save_path=os.path.join(fig_dir, f"PR_vs_GT_{idx}.svg"),
             left_title=f"Ground Truth Point Cloud (Sample {idx})",
