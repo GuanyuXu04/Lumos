@@ -9,14 +9,14 @@ import torch
 import open3d as o3d
 from matplotlib import cm  # fast enough for per-frame colormap
 
-from lumos.model import ShapeNet # Change to model_old if want 2048 points version
+from model import ShapeNet # Change to model_old if want 2048 points version
 
 # ---------------- Config ----------------
 PORT = "COM6"
 BAUD = 2000000
 TIMEOUT = 0.1
 EXPECTED_COLUMNS = 218
-MODEL_PATH = "best_combined_500.pth"
+MODEL_PATH = "best_combined.pth"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 VERBOSE = False
 COLUMNS = np.concatenate([np.arange(9 + 7 * i, 15 + 7 * i) for i in range(30)])
