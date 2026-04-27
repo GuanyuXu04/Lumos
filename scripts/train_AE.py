@@ -15,7 +15,10 @@ from torch.utils.data.distributed import DistributedSampler
 
 from lumos.model import PCAutoencoder
 from lumos.data import WaveguideDataset
-from lumos.ddp import is_dist, is_main, ddp_setup, ddp_cleanup, all_reduce_mean
+from lumos.ddp import (
+    is_dist, is_main, ddp_setup, ddp_cleanup, all_reduce_mean,
+    select_free_gpus, apply_visible_devices,
+)
 from lumos.losses import chamfer_distance, repulsion_loss
 from lumos.viz import plot_pc_pair
 
@@ -277,12 +280,30 @@ if __name__ == "__main__":
     np.random.seed(cfg["seed"])
     torch.manual_seed(cfg["seed"])
     torch.backends.cudnn.benchmark = True
-    gc.collect()
-    torch.cuda.empty_cache()
 
-    # Determine how many GPUs to use
-    n_available = torch.cuda.device_count()
+    # Decide which GPUs to use BEFORE any torch.cuda.* call so we can still
+    # narrow CUDA_VISIBLE_DEVICES (a CUDA context locks visibility).
     gpus_cfg = cfg["train_ae"].get("gpus", "auto")
+    min_free_gib = float(cfg["train_ae"].get("min_free_gpu_mem_gib", 20))
+    launched_by_torchrun = "LOCAL_RANK" in os.environ
+
+    if gpus_cfg == "auto" and not launched_by_torchrun:
+        selected, free = select_free_gpus(min_free_mib=int(min_free_gib * 1024))
+        if free:
+            free_str = ", ".join(f"cuda:{i}={free[i] / 1024:.1f}GiB" for i in range(len(free)))
+            print(f"[GPU] Free memory per visible device: {free_str}")
+        if selected and len(selected) < len(free):
+            phys = apply_visible_devices(selected)
+            print(f"[GPU] Selected physical GPU(s) {','.join(phys)} "
+                  f"(>= {min_free_gib:.1f} GiB free); skipping the rest.")
+        elif selected:
+            print(f"[GPU] All {len(selected)} visible GPU(s) meet the {min_free_gib:.1f} GiB threshold.")
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    n_available = torch.cuda.device_count()
     n_gpus = n_available if gpus_cfg == "auto" else min(int(gpus_cfg), n_available)
 
     if "LOCAL_RANK" in os.environ:

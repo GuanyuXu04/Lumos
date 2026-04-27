@@ -35,7 +35,10 @@ if __name__ == "__main__":
     os.makedirs(fig_dir, exist_ok=True)
     os.makedirs(fscore_dir, exist_ok=True)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+    print(f"Using device {device}")
     model = ShapeNet(
         pd_in_features=model_cfg["optical_dim"],
         latent_dim=model_cfg["latent_dim"],

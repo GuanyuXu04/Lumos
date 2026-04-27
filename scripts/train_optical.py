@@ -104,7 +104,10 @@ def main(cfg: dict):
     ae_run_dir = os.path.join(out_cfg["base_dir"], ae_run)
     ae_ckpt_path = os.path.join(ae_run_dir, "checkpoints", "best_model.pth")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+    print(f"Using device {device}")
 
     dataset = WaveguideDataset(data_cfg["path"], stride=data_cfg["stride"])
     sample_point, sample_optical, _ = dataset[0]
