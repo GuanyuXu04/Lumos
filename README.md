@@ -26,20 +26,6 @@ cd /path/to/Lumos
 pip install -e .
 ```
 
-The current `pyproject.toml` only declares the package and `pyyaml`, so install the runtime packages used by the training and tools manually:
-
-```bash
-pip install numpy scipy matplotlib opencv-python pyserial open3d
-```
-
-For data collection with an Intel RealSense camera, also install:
-
-```bash
-pip install pyrealsense2
-```
-
-If `open3d` fails to install, check that your Python version is supported by the Open3D wheel available for your OS.
-
 ---
 
 ## Dataset format
